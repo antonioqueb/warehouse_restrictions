@@ -173,8 +173,11 @@ class MrpProduction(models.Model):
     @api.model
     def default_get(self, fields_list):
         """
-        Asigna picking_type_id = manu_type_id si el user tiene varios almacenes
-        pero sólo 1 manu_type_id en total. Si hay más de uno, no asigna nada.
+        Asigna picking_type_id de la siguiente forma:
+        - Si el usuario tiene varios almacenes asignados, se analizan sus manu_type_id (no nulos).
+        - Si hay exactamente 1 manu_type_id, se asigna automáticamente.
+        - Si hay más de uno, se asigna por un criterio (ej. ID menor).
+        - Si no hay ninguno, no se asigna nada.
         """
         res = super(MrpProduction, self).default_get(fields_list)
 
@@ -183,11 +186,16 @@ class MrpProduction(models.Model):
             ('assigned_user_ids', 'in', user.id)
         ])
         if assigned_warehouses:
-            # Todos los manu_type_id no nulos
+            # Recogemos todos los manu_type_id de esos almacenes (eliminando duplicados y vacíos)
             manu_types = assigned_warehouses.mapped('manu_type_id').filtered(lambda pt: pt)
-            # Quitar duplicados
-            manu_types = list(set(manu_types))
+            manu_types = list(set(manu_types))  # quitar duplicados
+
             if len(manu_types) == 1:
+                # Si solo hay uno, lo asignamos directamente
                 res['picking_type_id'] = manu_types[0].id
+            elif len(manu_types) > 1:
+                # Si hay más de uno, escogemos el de ID más bajo (u otra lógica que desees)
+                chosen_type = sorted(manu_types, key=lambda pt: pt.id)[0]
+                res['picking_type_id'] = chosen_type.id
 
         return res
