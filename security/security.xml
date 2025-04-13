@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Grupo global: administradores de restricciones de almacenes -->
+        <record id="group_warehouse_restriction_admin" model="res.groups">
+            <field name="name">Warehouse Restriction Admin</field>
+            <field name="category_id" ref="base.module_category_inventory"/>
+            <!-- Añadimos el usuario root a este grupo -->
+            <field name="users" eval="[(4, ref('base.user_root'))]"/>
+        </record>
+
+        <!-- Regla opcional: acceso total a stock.warehouse para este grupo -->
+        <record id="rule_admin_warehouse_access" model="ir.rule">
+            <field name="name">Admin Warehouse Access</field>
+            <field name="model_id" ref="stock.model_stock_warehouse"/>
+            <!-- domain_force vacio -> sin restricciones. Es decir, ver todos -->
+            <field name="domain_force">[]</field>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+            <field name="groups" eval="[(4, ref('warehouse_restrictions.group_warehouse_restriction_admin'))]"/>
+        </record>
+    </data>
+</odoo>
