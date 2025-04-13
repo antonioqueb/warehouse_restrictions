@@ -21,6 +21,13 @@ class StockWarehouse(models.Model):
         help="Grupo de seguridad asociado a este almacén para restringir datos."
     )
 
+    # NUEVO: tipo de operación para manufactura
+    manu_type_id = fields.Many2one(
+        'stock.picking.type',
+        string='Manufacturing Operation Type',
+        help="Tipo de operación usado para las órdenes de producción en este almacén."
+    )
+
     @api.model
     def create(self, vals):
         warehouse = super(StockWarehouse, self).create(vals)
@@ -36,9 +43,16 @@ class StockWarehouse(models.Model):
     def _create_or_update_warehouse_group_and_rules(self):
         """
         Crea o actualiza el grupo (res.groups) ligado a este almacén
-        y configura las reglas (ir.rule) para restringir datos a las ubicaciones
-        e información relacionadas con este almacén, permitiendo al usuario
-        ver también ubicaciones globales (supplier, customer, production...).
+        y las reglas de registro (ir.rule) para restringir datos a:
+          - stock.picking
+          - mrp.production
+          - stock.picking.type
+          - stock.location
+          - stock.quant
+          - stock.move
+          - stock.inventory
+          - stock.scrap
+        Permite también ubicaciones globales (supplier, customer, production...).
         """
         self.ensure_one()
 
@@ -55,8 +69,8 @@ class StockWarehouse(models.Model):
         # 2) Sincronizar usuarios asignados -> grupo
         group.users = [(6, 0, self.assigned_user_ids.ids)]
 
+        # Helper para crear/actualizar reglas
         def _create_or_update_rule(rule_name, model_xmlid, domain_force):
-            """Helper para crear/actualizar la regla con un dominio dado."""
             if not model_xmlid:
                 return
             model = self.env.ref(model_xmlid, raise_if_not_found=False)
@@ -79,10 +93,9 @@ class StockWarehouse(models.Model):
                     'groups': [(4, group.id)],
                 })
 
-        # ---------------------------------------------------------------------
+        # -------------------------------
         #  Reglas por modelo
-        # ---------------------------------------------------------------------
-
+        # -------------------------------
         # 1) stock.picking
         picking_rule_name = _("Rule: Stock Pickings for %s") % self.name
         picking_rule_domain = "[('picking_type_id.warehouse_id','=', %d)]" % self.id
@@ -113,7 +126,6 @@ class StockWarehouse(models.Model):
         _create_or_update_rule(quant_rule_name, 'stock.model_stock_quant', quant_rule_domain)
 
         # 6) stock.move
-        # Aquí corregimos la cantidad de '|'
         move_rule_name = _("Rule: Stock Moves for %s") % self.name
         move_rule_domain = (
             "['|','|','|',"
@@ -153,26 +165,37 @@ class StockPicking(models.Model):
 
     @api.model
     def default_get(self, fields_list):
-        """Forzamos que el picking_type_id sea del almacén asignado al usuario, si sólo tiene uno."""
+        """Asigna el picking_type_id del almacén, según el picking_type_code (incoming/outgoing/internal)."""
         res = super(StockPicking, self).default_get(fields_list)
+
         user = self.env.user
         assigned_warehouses = self.env['stock.warehouse'].search([
             ('assigned_user_ids', 'in', user.id)
         ])
+        # Solo si el usuario está asignado a EXACTAMENTE un almacén
         if len(assigned_warehouses) == 1:
             wh = assigned_warehouses[0]
-            # Ajusta según tu operación por defecto (in_type_id, out_type_id, etc.)
-            if wh.in_type_id:
-                res['picking_type_id'] = wh.in_type_id.id
-        return res
 
+            # Vemos si en el contexto hay algo como 'incoming', 'outgoing' o 'internal'
+            picking_type_code = self.env.context.get('default_picking_type_code')
+            if picking_type_code == 'incoming' and wh.in_type_id:
+                res['picking_type_id'] = wh.in_type_id.id
+            elif picking_type_code == 'outgoing' and wh.out_type_id:
+                res['picking_type_id'] = wh.out_type_id.id
+            elif picking_type_code == 'internal' and wh.int_type_id:
+                res['picking_type_id'] = wh.int_type_id.id
+            # De lo contrario, no seteamos nada, o podrías forzar un fallback:
+            # else:
+            #     res['picking_type_id'] = wh.in_type_id.id
+
+        return res
 
 class MrpProduction(models.Model):
     _inherit = 'mrp.production'
 
     @api.model
     def default_get(self, fields_list):
-        """Forzamos que el picking_type_id sea del almacén asignado al usuario, si sólo tiene uno."""
+        """Asigna el picking_type_id = wh.manu_type_id (manufactura) si sólo hay un almacén asignado."""
         res = super(MrpProduction, self).default_get(fields_list)
         user = self.env.user
         assigned_warehouses = self.env['stock.warehouse'].search([
@@ -180,7 +203,7 @@ class MrpProduction(models.Model):
         ])
         if len(assigned_warehouses) == 1:
             wh = assigned_warehouses[0]
-            # Ajusta según tu lógica MRP. Si usas wh.int_type_id o un picking_type específico, etc.
-            if wh.int_type_id:
-                res['picking_type_id'] = wh.int_type_id.id
+            # NUEVO: usar manu_type_id en vez de int_type_id
+            if wh.manu_type_id:
+                res['picking_type_id'] = wh.manu_type_id.id
         return res
