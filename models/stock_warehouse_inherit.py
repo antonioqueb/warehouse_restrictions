@@ -24,7 +24,7 @@ class StockWarehouse(models.Model):
     @api.model
     def create(self, vals):
         """Sobrescribimos create para que, al crear un nuevo almacén,
-           se genere o actualice el grupo y reglas de acceso."""
+           se genere o actualice el grupo y las reglas de acceso."""
         warehouse = super(StockWarehouse, self).create(vals)
         warehouse._create_or_update_warehouse_group_and_rules()
         return warehouse
@@ -100,7 +100,6 @@ class StockWarehouse(models.Model):
         # 4) Regla de mrp.production (órdenes de producción)
         mrp_rule_name = _("Rule: MRP Productions for %s") % self.name
         mrp_rule_domain = "[('picking_type_id.warehouse_id','=', %d)]" % self.id
-        # Ojo: Si tu producción no siempre está ligada a un picking_type, ajusta la regla
         _create_or_update_rule(mrp_rule_name, 'mrp.model_mrp_production', mrp_rule_domain)
 
         # 5) Regla de stock.picking.type (Kanban de Operaciones)
@@ -108,38 +107,54 @@ class StockWarehouse(models.Model):
         picking_type_rule_domain = "[('warehouse_id','=', %d)]" % self.id
         _create_or_update_rule(picking_type_rule_name, 'stock.model_stock_picking_type', picking_type_rule_domain)
 
-        # 6) Regla de stock.location (ubicar solo ubicaciones hijas del almacén)
-        #    Normalmente: lot_stock_id es la ubicación "Interna" principal del almacén.
+        # 6) Regla de stock.location
+        # OR entre "ubicaciones hijas del almacén" Y "ubicaciones globales" (supplier, customer, production, etc.).
         location_rule_name = _("Rule: Locations for %s") % self.name
-        location_rule_domain = "[('id','child_of', %d)]" % (self.lot_stock_id.id or 0)
+        location_rule_domain = (
+            "['|', "
+            " ('id','child_of', %d), "
+            " ('usage','in',['supplier','customer','production','inventory','view','transit'])]"
+        ) % (self.lot_stock_id.id or 0)
         _create_or_update_rule(location_rule_name, 'stock.model_stock_location', location_rule_domain)
 
-        # 7) Regla de stock.quant (para ver existencias sólo en ubicaciones del almacén)
+        # 7) Regla de stock.quant (ver existencias sólo en ubicaciones del almacén).
         quant_rule_name = _("Rule: Quants for %s") % self.name
         quant_rule_domain = "[('location_id','child_of', %d)]" % (self.lot_stock_id.id or 0)
         _create_or_update_rule(quant_rule_name, 'stock.model_stock_quant', quant_rule_domain)
 
         # 8) Regla de stock.move
-        #    Filtramos por localización origen/destino del almacén (más fiable que el picking_type).
+        # Permitir si ORIGEN o DESTINO está en el almacén o es una ubicación global (usage in [...]).
         move_rule_name = _("Rule: Stock Moves for %s") % self.name
-        # child_of en location_id O location_dest_id
-        # NOTA: En dominio Odoo se expresa con & y |, p.ej. [('location_id','child_of',X),('location_dest_id','child_of',X)]
-        move_rule_domain = "['|', ('location_id','child_of', %d), ('location_dest_id','child_of', %d)]" % (
-            self.lot_stock_id.id or 0, self.lot_stock_id.id or 0)
+        move_rule_domain = (
+            "['|','|','|','|',"
+            " ('location_id','child_of', %d),"
+            " ('location_dest_id','child_of', %d),"
+            " ('location_id.usage','in',['supplier','customer','production','inventory','transit','view']),"
+            " ('location_dest_id.usage','in',['supplier','customer','production','inventory','transit','view'])"
+            "]"
+        ) % (self.lot_stock_id.id or 0, self.lot_stock_id.id or 0)
         _create_or_update_rule(move_rule_name, 'stock.model_stock_move', move_rule_domain)
 
         # 9) Regla de stock.inventory (ajustes de inventario)
-        #    Filtramos por las locaciones (location_ids) relacionadas
-        #    Esto depende de tu configuración; puede ser que debas ajustar la lógica de dominio
+        # OR entre "location_ids está en el almacén" o "usage en [...]."
         inventory_rule_name = _("Rule: Inventories for %s") % self.name
-        # Simplificado: si *todas* las ubicaciones en location_ids están dentro de este almacén
-        # no es trivial hacer un OR en dominio. Ejemplo (sólo una aproximación):
-        inventory_rule_domain = "[('location_ids.location_id','child_of', %d)]" % (self.lot_stock_id.id or 0)
+        inventory_rule_domain = (
+            "['|',"
+            " ('location_ids.location_id','child_of', %d),"
+            " ('location_ids.location_id.usage','in',['supplier','customer','production','inventory','transit','view'])"
+            "]"
+        ) % (self.lot_stock_id.id or 0)
         _create_or_update_rule(inventory_rule_name, 'stock.model_stock_inventory', inventory_rule_domain)
 
         # 10) Regla de stock.scrap (mermas)
+        # OR entre "location_id está en el almacén" o "usage en [...]."
         scrap_rule_name = _("Rule: Scrap for %s") % self.name
-        scrap_rule_domain = "[('location_id','child_of', %d)]" % (self.lot_stock_id.id or 0)
+        scrap_rule_domain = (
+            "['|',"
+            " ('location_id','child_of', %d),"
+            " ('location_id.usage','in',['supplier','customer','production','inventory','transit','view'])"
+            "]"
+        ) % (self.lot_stock_id.id or 0)
         _create_or_update_rule(scrap_rule_name, 'stock.model_stock_scrap', scrap_rule_domain)
 
         return True
@@ -153,14 +168,14 @@ class StockPicking(models.Model):
         """Forzamos que el picking_type_id sea del almacén asignado al usuario, si sólo tienen uno."""
         res = super(StockPicking, self).default_get(fields_list)
         user = self.env.user
-        # Buscamos los almacenes asignados al usuario actual:
+        # Buscamos los almacenes asignados al usuario actual.
         assigned_warehouses = self.env['stock.warehouse'].search([
             ('assigned_user_ids', 'in', user.id)
         ])
+        # Si el usuario sólo tiene 1 almacén asignado,
+        # forzamos el tipo de operación predeterminado (ej. Recepciones in_type_id).
         if len(assigned_warehouses) == 1:
             wh = assigned_warehouses[0]
-            # Por ejemplo, usar el tipo de operación 'in_type_id' (Recepciones) por defecto.
-            # Ajusta según tu lógica real (puede ser out_type_id, pick_type_id, etc.)
             if wh.in_type_id:
                 res['picking_type_id'] = wh.in_type_id.id
         return res
@@ -174,15 +189,13 @@ class MrpProduction(models.Model):
         """Forzamos que el picking_type_id sea del almacén asignado al usuario, si sólo tienen uno."""
         res = super(MrpProduction, self).default_get(fields_list)
         user = self.env.user
-        # Buscamos los almacenes asignados al usuario actual:
         assigned_warehouses = self.env['stock.warehouse'].search([
             ('assigned_user_ids', 'in', user.id)
         ])
         if len(assigned_warehouses) == 1:
             wh = assigned_warehouses[0]
-            # Ajusta según tu flujo de producción (ej. quizá wh.manufacturing_pick_type_id, etc.)
-            # En Odoo estándar no siempre hay un picking_type_id para mrp.production, 
-            # pero si lo tienes, aquí lo setearías:
+            # Ajusta según tu flujo de trabajo de MRP; si usas wh.int_type_id o
+            # un "manufacturing_pick_type_id" personalizado, etc.
             if wh.int_type_id:
                 res['picking_type_id'] = wh.int_type_id.id
         return res
