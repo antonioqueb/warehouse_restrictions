@@ -97,10 +97,10 @@ class StockWarehouse(models.Model):
 
         location_rule_name = _("Rule: Locations for %s") % self.name
         location_rule_domain = (
-                "['|', "
-                " ('id','child_of', %d), "
-                " ('usage','in',['supplier','customer','production','inventory','view','transit','internal'])]"
-            ) % (self.view_location_id.id or 0)
+            "['|', "
+            " ('id','child_of', %d), "
+            " ('usage','in',['supplier','customer','production','inventory','view','transit','internal'])]"
+        ) % (self.view_location_id.id or 0)
         _create_or_update_rule(location_rule_name, 'stock.model_stock_location', location_rule_domain)
 
         quant_rule_name = _("Rule: Quants for %s") % self.name
